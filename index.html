@@ -187,29 +187,226 @@
             convertBtn.disabled = true;
 
             try {
-                const response = await fetch('/api/convert', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ url: url })
-                });
-
-                const data = await response.json();
-
-                if (data.success) {
-                    outputText.value = data.output;
-                    outputSection.classList.add('active');
-                } else {
-                    showError(data.error || 'An error occurred while processing the URL');
-                }
+                // Ensure JSON URL
+                let jsonUrl = ensureJsonUrl(url);
+                jsonUrl = normalizeRedditUrl(jsonUrl);
+                
+                // Fetch Reddit JSON directly from browser
+                const redditData = await fetchRedditJson(jsonUrl);
+                
+                // Extract post info and comments
+                const postInfo = extractPostInfo(redditData);
+                const comments = extractComments(redditData);
+                
+                // Sort comments by upvotes
+                const sortedComments = sortCommentsByUpvotes(comments);
+                
+                // Format output
+                const output = formatOutput(postInfo, sortedComments);
+                
+                // Display result
+                outputText.value = output;
+                outputSection.classList.add('active');
             } catch (error) {
-                showError('Failed to process request. Please try again.');
+                showError(error.message || 'Failed to process request. Please try again.');
                 console.error('Error:', error);
             } finally {
                 loading.classList.remove('active');
                 convertBtn.disabled = false;
             }
+        }
+
+        // Helper functions for Reddit processing
+        function ensureJsonUrl(url) {
+            if (url.endsWith('.json')) {
+                return url;
+            }
+            return url.replace(/\/$/, '') + '.json';
+        }
+
+        function normalizeRedditUrl(url) {
+            let normalized = url;
+            
+            // If it's a relative URL, make it absolute
+            if (normalized.startsWith('/r/') || normalized.startsWith('/comments/')) {
+                normalized = 'https://www.reddit.com' + normalized;
+            }
+            
+            // Replace old.reddit.com with www.reddit.com
+            normalized = normalized.replace(/https?:\/\/(old|np)\.reddit\.com/, 'https://www.reddit.com');
+            
+            // Ensure we're using https
+            normalized = normalized.replace(/^http:\/\//, 'https://');
+            
+            // Remove query parameters that might cause issues
+            try {
+                const urlObj = new URL(normalized);
+                urlObj.search = '';
+                normalized = urlObj.toString();
+            } catch (e) {
+                // If URL parsing fails, just use the normalized URL as is
+            }
+            
+            return normalized;
+        }
+
+        async function fetchRedditJson(url) {
+            try {
+                console.log('Fetching Reddit URL:', url);
+                
+                const response = await fetch(url, {
+                    method: 'GET',
+                    redirect: 'follow',
+                    credentials: 'omit'
+                });
+                
+                if (!response.ok) {
+                    if (response.status === 403) {
+                        throw new Error('Reddit is blocking the request. Please try a different Reddit post URL or ensure the URL is publicly accessible.');
+                    }
+                    if (response.status === 429) {
+                        throw new Error('Reddit rate limit exceeded. Please wait a few minutes and try again.');
+                    }
+                    throw new Error(`Reddit API error: ${response.status} ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                console.log('Successfully fetched Reddit data');
+                return data;
+            } catch (error) {
+                console.error('Fetch error:', error);
+                throw new Error(`Error fetching Reddit data: ${error.message}`);
+            }
+        }
+
+        function extractPostInfo(data) {
+            if (!data || !Array.isArray(data) || data.length < 1) {
+                throw new Error('Invalid Reddit data structure: missing post data');
+            }
+
+            if (!data[0] || !data[0].data || !data[0].data.children || data[0].data.children.length < 1) {
+                throw new Error('Invalid Reddit data structure: missing post children');
+            }
+
+            const postData = data[0].data.children[0].data;
+            return {
+                title: postData.title || '',
+                selftext: postData.selftext || '',
+                author: postData.author || '',
+                score: postData.score || 0,
+                url: postData.url || ''
+            };
+        }
+
+        function extractComments(data) {
+            const comments = [];
+
+            if (!data || !Array.isArray(data) || data.length < 2) {
+                return comments;
+            }
+
+            function traverseComments(commentTree) {
+                if (!commentTree || !commentTree.data) {
+                    return;
+                }
+
+                const commentData = commentTree.data;
+
+                // Skip "more" objects and deleted comments
+                if (commentData.kind === 'more' || 
+                    !commentData.body || 
+                    commentData.body === '[deleted]' || 
+                    commentData.body === '[removed]') {
+                    if (commentData.replies && commentData.replies.data) {
+                        for (const reply of commentData.replies.data.children || []) {
+                            traverseComments(reply);
+                        }
+                    }
+                    return;
+                }
+
+                // Extract comment information
+                const comment = {
+                    body: commentData.body || '',
+                    author: commentData.author || '[deleted]',
+                    score: commentData.score || 0,
+                    upvotes: commentData.ups || 0,
+                    downvotes: commentData.downs || 0,
+                    created_utc: commentData.created_utc || 0,
+                    is_submitter: commentData.is_submitter || false,
+                    permalink: commentData.permalink || ''
+                };
+
+                // Only add comments with actual content
+                if (comment.body) {
+                    comments.push(comment);
+                }
+
+                // Recursively process replies
+                if (commentData.replies && commentData.replies.data) {
+                    for (const reply of commentData.replies.data.children || []) {
+                        traverseComments(reply);
+                    }
+                }
+            }
+
+            // Start traversing from the second item (comments section)
+            if (!data[1] || !data[1].data || !data[1].data.children) {
+                return comments; // No comments section
+            }
+
+            const commentsSection = data[1].data.children;
+            for (const commentTree of commentsSection) {
+                traverseComments(commentTree);
+            }
+
+            return comments;
+        }
+
+        function sortCommentsByUpvotes(comments) {
+            return [...comments].sort((a, b) => b.upvotes - a.upvotes);
+        }
+
+        function formatOutput(postInfo, comments) {
+            const output = [];
+
+            // Post information
+            output.push('='.repeat(80));
+            output.push('REDDIT POST');
+            output.push('='.repeat(80));
+            output.push(`Title: ${postInfo.title || 'N/A'}`);
+            output.push(`Author: u/${postInfo.author || 'N/A'}`);
+            output.push(`Score: ${postInfo.score || 0} upvotes`);
+            output.push('');
+
+            if (postInfo.selftext) {
+                output.push('Post Content:');
+                output.push('-'.repeat(80));
+                output.push(postInfo.selftext);
+                output.push('');
+            }
+
+            // Comments
+            output.push('='.repeat(80));
+            output.push(`COMMENTS (Sorted by Upvotes, Highest First)`);
+            output.push(`Total Comments: ${comments.length}`);
+            output.push('='.repeat(80));
+            output.push('');
+
+            comments.forEach((comment, idx) => {
+                output.push(`Comment #${idx + 1}`);
+                output.push('-'.repeat(80));
+                output.push(`Upvotes: ${comment.upvotes} | Score: ${comment.score} | Author: u/${comment.author}`);
+                if (comment.is_submitter) {
+                    output.push('(Original Poster)');
+                }
+                output.push('');
+                output.push(comment.body);
+                output.push('');
+                output.push('');
+            });
+
+            return output.join('\n');
         }
 
         function copyToClipboard() {
