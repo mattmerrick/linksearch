@@ -10,10 +10,12 @@
     {
       "src": "/api/convert",
       "dest": "/api/convert.py"
-    },
+    }
+  ],
+  "rewrites": [
     {
-      "src": "/(.*)",
-      "dest": "/index.html"
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ]
 }
