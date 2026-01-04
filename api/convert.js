@@ -11,22 +11,23 @@ export default async function handler(req, res) {
 
   // Handle preflight OPTIONS request
   if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+    res.status(200).end();
+    return;
   }
 
   if (req.method !== 'POST') {
-    return res.status(405).json({ success: false, error: 'Method not allowed' });
+    res.status(405).json({ success: false, error: 'Method not allowed' });
+    return;
   }
 
   try {
-    // Parse request body - Vercel might pass it as a string
-    let body = req.body;
-    if (typeof body === 'string') {
-      try {
-        body = JSON.parse(body);
-      } catch (e) {
-        return res.status(400).json({ success: false, error: 'Invalid JSON in request body' });
-      }
+    // Parse request body
+    let body;
+    try {
+      body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    } catch (e) {
+      res.status(400).json({ success: false, error: 'Invalid JSON in request body' });
+      return;
     }
     
     const { url } = body || {};
@@ -51,20 +52,24 @@ export default async function handler(req, res) {
     // Format output
     const output = formatOutput(postInfo, sortedComments);
 
-    return res.status(200).json({
+    res.status(200).json({
       success: true,
       output: output,
       post_info: postInfo,
       comment_count: sortedComments.length
     });
+    return;
 
   } catch (error) {
     console.error('Error in convert API:', error);
-    return res.status(500).json({
+    const errorMessage = error.message || 'An error occurred while processing the URL';
+    console.error('Error details:', errorMessage, error.stack);
+    
+    res.status(500).json({
       success: false,
-      error: error.message || 'An error occurred while processing the URL',
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: errorMessage
     });
+    return;
   }
 }
 
@@ -77,17 +82,28 @@ function ensureJsonUrl(url) {
 
 async function fetchRedditJson(url) {
   const headers = {
-    'User-Agent': 'RedditConverter/1.0 (Educational Purpose)'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
   };
 
   try {
-    const response = await fetch(url, { headers });
+    console.log('Fetching Reddit URL:', url);
+    const response = await fetch(url, { 
+      headers,
+      method: 'GET'
+    });
+    
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      const errorText = await response.text();
+      console.error('Reddit API error:', response.status, errorText);
+      throw new Error(`Reddit API error: ${response.status} - ${errorText.substring(0, 100)}`);
     }
-    return await response.json();
+    
+    const data = await response.json();
+    console.log('Successfully fetched Reddit data');
+    return data;
   } catch (error) {
-    throw new Error(`Error fetching URL: ${error.message}`);
+    console.error('Fetch error:', error);
+    throw new Error(`Error fetching Reddit data: ${error.message}`);
   }
 }
 
