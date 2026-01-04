@@ -19,7 +19,17 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { url } = req.body;
+    // Parse request body - Vercel might pass it as a string
+    let body = req.body;
+    if (typeof body === 'string') {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        return res.status(400).json({ success: false, error: 'Invalid JSON in request body' });
+      }
+    }
+    
+    const { url } = body || {};
 
     if (!url || !url.trim()) {
       return res.status(400).json({ success: false, error: 'URL is required' });
@@ -49,9 +59,11 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
+    console.error('Error in convert API:', error);
     return res.status(500).json({
       success: false,
-      error: error.message || 'An error occurred while processing the URL'
+      error: error.message || 'An error occurred while processing the URL',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 }
@@ -81,7 +93,11 @@ async function fetchRedditJson(url) {
 
 function extractPostInfo(data) {
   if (!data || !Array.isArray(data) || data.length < 1) {
-    return {};
+    throw new Error('Invalid Reddit data structure: missing post data');
+  }
+
+  if (!data[0] || !data[0].data || !data[0].data.children || data[0].data.children.length < 1) {
+    throw new Error('Invalid Reddit data structure: missing post children');
   }
 
   const postData = data[0].data.children[0].data;
@@ -147,6 +163,10 @@ function extractComments(data) {
   }
 
   // Start traversing from the second item (comments section)
+  if (!data[1] || !data[1].data || !data[1].data.children) {
+    return comments; // No comments section
+  }
+
   const commentsSection = data[1].data.children;
   for (const commentTree of commentsSection) {
     traverseComments(commentTree);

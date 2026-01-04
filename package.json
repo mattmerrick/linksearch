@@ -1,0 +1,10 @@
+{
+  "name": "linksearch",
+  "version": "1.0.0",
+  "description": "Reddit to ChatGPT Converter",
+  "type": "module",
+  "engines": {
+    "node": ">=18.x"
+  }
+}
+
