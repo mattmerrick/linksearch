@@ -12,7 +12,7 @@
       "dest": "/api/convert.py"
     },
     {
-      "src": "/",
+      "src": "/(.*)",
       "dest": "/index.html"
     }
   ]
