@@ -36,8 +36,11 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: 'URL is required' });
     }
 
-    // Ensure JSON URL
-    const jsonUrl = ensureJsonUrl(url.trim());
+    // Ensure JSON URL - handle different Reddit URL formats
+    let jsonUrl = ensureJsonUrl(url.trim());
+    
+    // Normalize Reddit URLs
+    jsonUrl = normalizeRedditUrl(jsonUrl);
 
     // Fetch Reddit JSON
     const redditData = await fetchRedditJson(jsonUrl);
@@ -77,25 +80,77 @@ function ensureJsonUrl(url) {
   if (url.endsWith('.json')) {
     return url;
   }
+  // Remove trailing slash and add .json
   return url.replace(/\/$/, '') + '.json';
 }
 
+function normalizeRedditUrl(url) {
+  // Handle different Reddit URL formats
+  let normalized = url;
+  
+  // If it's a relative URL, make it absolute
+  if (normalized.startsWith('/r/') || normalized.startsWith('/comments/')) {
+    normalized = 'https://www.reddit.com' + normalized;
+  }
+  
+  // Replace old.reddit.com with www.reddit.com (old.reddit sometimes blocks bots)
+  normalized = normalized.replace(/https?:\/\/(old|np)\.reddit\.com/, 'https://www.reddit.com');
+  
+  // Ensure we're using https
+  normalized = normalized.replace(/^http:\/\//, 'https://');
+  
+  // Remove query parameters that might cause issues
+  const urlObj = new URL(normalized);
+  urlObj.search = ''; // Remove query params
+  normalized = urlObj.toString();
+  
+  return normalized;
+}
+
 async function fetchRedditJson(url) {
+  // Use minimal headers - Reddit's JSON API should work with simple requests
+  // Too many headers might trigger bot detection
   const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (compatible; RedditConverter/1.0)',
+    'Accept': 'application/json'
   };
 
   try {
     console.log('Fetching Reddit URL:', url);
+    
+    // Add a small delay to avoid rate limiting
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
     const response = await fetch(url, { 
       headers,
-      method: 'GET'
+      method: 'GET',
+      redirect: 'follow',
+      // Don't send cookies or credentials
+      credentials: 'omit'
     });
     
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Reddit API error:', response.status, errorText);
-      throw new Error(`Reddit API error: ${response.status} - ${errorText.substring(0, 100)}`);
+      // Try to get error details
+      let errorText = '';
+      try {
+        errorText = await response.text();
+      } catch (e) {
+        errorText = 'Could not read error response';
+      }
+      
+      console.error('Reddit API error:', response.status, response.statusText);
+      console.error('Error response preview:', errorText.substring(0, 200));
+      
+      // If 403, it's likely rate limiting or bot detection
+      if (response.status === 403) {
+        throw new Error('Reddit is blocking the request (403). This might be due to rate limiting. Please wait a moment and try again, or try a different Reddit post.');
+      }
+      
+      if (response.status === 429) {
+        throw new Error('Reddit rate limit exceeded. Please wait a few minutes and try again.');
+      }
+      
+      throw new Error(`Reddit API error: ${response.status} ${response.statusText}`);
     }
     
     const data = await response.json();
