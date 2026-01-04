@@ -10,6 +10,10 @@
     {
       "src": "/api/convert",
       "dest": "/api/convert.py"
+    },
+    {
+      "src": "/",
+      "dest": "/index.html"
     }
   ]
 }
