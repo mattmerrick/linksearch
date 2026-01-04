@@ -18,7 +18,7 @@ from reddit_converter import (
 )
 
 
-def handler(request):
+def handler(req):
     """Vercel serverless function handler"""
     # Handle CORS
     headers = {
@@ -28,8 +28,11 @@ def handler(request):
         'Access-Control-Allow-Headers': 'Content-Type'
     }
     
+    # Get method from request
+    method = getattr(req, 'method', 'GET')
+    
     # Handle preflight OPTIONS request
-    if request.method == 'OPTIONS':
+    if method == 'OPTIONS':
         return {
             'statusCode': 200,
             'headers': headers,
@@ -38,20 +41,27 @@ def handler(request):
     
     try:
         # Parse request body
-        if request.method != 'POST':
+        if method != 'POST':
             return {
                 'statusCode': 405,
                 'headers': headers,
                 'body': json.dumps({'success': False, 'error': 'Method not allowed'})
             }
         
-        # Get request body - Vercel passes it as request.body (string) or request.json
-        if hasattr(request, 'json') and request.json:
-            body = request.json
-        elif hasattr(request, 'body'):
-            body = json.loads(request.body) if isinstance(request.body, str) else request.body
-        else:
-            body = {}
+        # Get request body - Vercel passes it as req.body (string) or req.json
+        body = {}
+        if hasattr(req, 'json') and req.json:
+            body = req.json
+        elif hasattr(req, 'body'):
+            if isinstance(req.body, str):
+                try:
+                    body = json.loads(req.body)
+                except json.JSONDecodeError:
+                    body = {}
+            elif isinstance(req.body, dict):
+                body = req.body
+            else:
+                body = {}
         
         url = body.get('url', '').strip()
         
