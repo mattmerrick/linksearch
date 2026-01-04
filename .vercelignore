@@ -8,6 +8,8 @@ venv/
 .venv/
 output.txt
 start.bat
-app.py
 templates/
+*.py
+DEPLOY_RENDER.md
+render.yaml
 
