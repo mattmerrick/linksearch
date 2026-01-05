@@ -1,6 +1,19 @@
 /**
  * Vercel serverless function for Reddit JSON conversion
- * Pure JavaScript - no Python needed!
+ * Uses Reddit's official OAuth API for reliable, compliant access
+ * 
+ * Setup required:
+ * 1. Create a Reddit app at https://www.reddit.com/prefs/apps
+ * 2. Set app type to "script" (correct for public web apps where users don't log in)
+ * 3. Set environment variables:
+ *    - REDDIT_CLIENT_ID: Your app's client ID (under the app name)
+ *    - REDDIT_CLIENT_SECRET: Your app's secret
+ *    - REDDIT_USER_AGENT: A unique identifier (e.g., "YourAppName/1.0 by YourUsername")
+ * 
+ * Note: "script" type is correct even for public web apps because:
+ * - Users don't need to authenticate with Reddit
+ * - Your server makes API calls on behalf of all users
+ * - "web app" type is only needed if users must log in with their Reddit accounts
  */
 
 export default async function handler(req, res) {
@@ -21,6 +34,18 @@ export default async function handler(req, res) {
   }
 
   try {
+    // Check for required environment variables
+    const clientId = process.env.REDDIT_CLIENT_ID;
+    const clientSecret = process.env.REDDIT_CLIENT_SECRET;
+    const userAgent = process.env.REDDIT_USER_AGENT || 'RedditConverter/1.0';
+
+    if (!clientId || !clientSecret) {
+      return res.status(500).json({
+        success: false,
+        error: 'Reddit API credentials not configured. Please set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET environment variables.'
+      });
+    }
+
     // Parse request body
     let body;
     try {
@@ -36,14 +61,17 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: 'URL is required' });
     }
 
-    // Ensure JSON URL - handle different Reddit URL formats
-    let jsonUrl = ensureJsonUrl(url.trim());
-    
-    // Normalize Reddit URLs
-    jsonUrl = normalizeRedditUrl(jsonUrl);
+    // Extract post ID from URL
+    const postId = extractPostId(url.trim());
+    if (!postId) {
+      return res.status(400).json({ success: false, error: 'Invalid Reddit URL. Please provide a valid Reddit post URL.' });
+    }
 
-    // Fetch Reddit JSON
-    const redditData = await fetchRedditJson(jsonUrl);
+    // Get OAuth access token
+    const accessToken = await getRedditAccessToken(clientId, clientSecret, userAgent);
+
+    // Fetch post data using Reddit OAuth API
+    const redditData = await fetchRedditPost(postId, accessToken, userAgent);
 
     // Extract post info and comments
     const postInfo = extractPostInfo(redditData);
@@ -76,88 +104,142 @@ export default async function handler(req, res) {
   }
 }
 
-function ensureJsonUrl(url) {
-  if (url.endsWith('.json')) {
-    return url;
-  }
-  // Remove trailing slash and add .json
-  return url.replace(/\/$/, '') + '.json';
-}
-
-function normalizeRedditUrl(url) {
-  // Handle different Reddit URL formats
-  let normalized = url;
-  
-  // If it's a relative URL, make it absolute
-  if (normalized.startsWith('/r/') || normalized.startsWith('/comments/')) {
-    normalized = 'https://www.reddit.com' + normalized;
-  }
-  
-  // Replace old.reddit.com with www.reddit.com (old.reddit sometimes blocks bots)
-  normalized = normalized.replace(/https?:\/\/(old|np)\.reddit\.com/, 'https://www.reddit.com');
-  
-  // Ensure we're using https
-  normalized = normalized.replace(/^http:\/\//, 'https://');
-  
-  // Remove query parameters that might cause issues
-  const urlObj = new URL(normalized);
-  urlObj.search = ''; // Remove query params
-  normalized = urlObj.toString();
-  
-  return normalized;
-}
-
-async function fetchRedditJson(url) {
-  // Use minimal headers - Reddit's JSON API should work with simple requests
-  // Too many headers might trigger bot detection
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (compatible; RedditConverter/1.0)',
-    'Accept': 'application/json'
-  };
-
+/**
+ * Extract Reddit post ID from URL
+ * Supports formats like:
+ * - https://www.reddit.com/r/subreddit/comments/abc123/title/
+ * - https://old.reddit.com/r/subreddit/comments/abc123/title/
+ * - /r/subreddit/comments/abc123/title/
+ */
+function extractPostId(url) {
   try {
-    console.log('Fetching Reddit URL:', url);
+    // Normalize URL
+    let normalized = url.trim();
     
-    // Add a small delay to avoid rate limiting
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // If it's a relative URL, make it absolute
+    if (normalized.startsWith('/r/') || normalized.startsWith('/comments/')) {
+      normalized = 'https://www.reddit.com' + normalized;
+    }
     
-    const response = await fetch(url, { 
-      headers,
-      method: 'GET',
-      redirect: 'follow',
-      // Don't send cookies or credentials
-      credentials: 'omit'
+    // Replace old.reddit.com with www.reddit.com
+    normalized = normalized.replace(/https?:\/\/(old|np)\.reddit\.com/, 'https://www.reddit.com');
+    
+    // Ensure we're using https
+    normalized = normalized.replace(/^http:\/\//, 'https://');
+    
+    // Remove .json if present
+    normalized = normalized.replace(/\.json$/, '');
+    
+    // Extract post ID from URL pattern: /comments/{postId}/
+    const match = normalized.match(/\/comments\/([a-z0-9]+)/i);
+    if (match && match[1]) {
+      return match[1];
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Error extracting post ID:', error);
+    return null;
+  }
+}
+
+/**
+ * Get OAuth access token from Reddit
+ * Uses client credentials flow (no user authentication needed for read-only access)
+ */
+async function getRedditAccessToken(clientId, clientSecret, userAgent) {
+  try {
+    const authString = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+    
+    const response = await fetch('https://www.reddit.com/api/v1/access_token', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${authString}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': userAgent
+      },
+      body: 'grant_type=client_credentials'
     });
-    
+
     if (!response.ok) {
-      // Try to get error details
-      let errorText = '';
-      try {
-        errorText = await response.text();
-      } catch (e) {
-        errorText = 'Could not read error response';
+      const errorText = await response.text();
+      console.error('OAuth error:', response.status, errorText);
+      throw new Error(`Failed to get Reddit access token: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.access_token;
+  } catch (error) {
+    console.error('Error getting access token:', error);
+    throw new Error(`Failed to authenticate with Reddit API: ${error.message}`);
+  }
+}
+
+/**
+ * Fetch Reddit post data using OAuth API
+ * The comments endpoint returns both post and comments in the same format as the JSON endpoint
+ */
+async function fetchRedditPost(postId, accessToken, userAgent) {
+  try {
+    // First, get the post to find the subreddit
+    const postInfoUrl = `https://oauth.reddit.com/api/info.json?id=t3_${postId}`;
+    const postInfoResponse = await fetch(postInfoUrl, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'User-Agent': userAgent,
+        'Accept': 'application/json'
       }
+    });
+
+    if (!postInfoResponse.ok) {
+      const errorText = await postInfoResponse.text();
+      console.error('Reddit API error:', postInfoResponse.status, errorText);
       
-      console.error('Reddit API error:', response.status, response.statusText);
-      console.error('Error response preview:', errorText.substring(0, 200));
-      
-      // If 403, it's likely rate limiting or bot detection
-      if (response.status === 403) {
-        throw new Error('Reddit is blocking the request (403). This might be due to rate limiting. Please wait a moment and try again, or try a different Reddit post.');
+      if (postInfoResponse.status === 403) {
+        throw new Error('Access denied. Please check your Reddit API credentials.');
       }
-      
-      if (response.status === 429) {
+      if (postInfoResponse.status === 404) {
+        throw new Error('Post not found. Please check the Reddit URL.');
+      }
+      if (postInfoResponse.status === 429) {
         throw new Error('Reddit rate limit exceeded. Please wait a few minutes and try again.');
       }
       
-      throw new Error(`Reddit API error: ${response.status} ${response.statusText}`);
+      throw new Error(`Reddit API error: ${postInfoResponse.status} ${postInfoResponse.statusText}`);
     }
+
+    const postInfoData = await postInfoResponse.json();
     
-    const data = await response.json();
-    console.log('Successfully fetched Reddit data');
-    return data;
+    if (!postInfoData.data || !postInfoData.data.children || postInfoData.data.children.length === 0) {
+      throw new Error('Post not found or inaccessible');
+    }
+
+    const post = postInfoData.data.children[0].data;
+    const subreddit = post.subreddit;
+    
+    // Fetch post with comments using the comments endpoint
+    // This returns data in the same format as www.reddit.com/.../comments/{id}.json
+    const commentsUrl = `https://oauth.reddit.com/r/${subreddit}/comments/${postId}.json?limit=500`;
+    const commentsResponse = await fetch(commentsUrl, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'User-Agent': userAgent,
+        'Accept': 'application/json'
+      }
+    });
+
+    if (!commentsResponse.ok) {
+      // If comments fail, return just the post data in expected format
+      console.warn('Failed to fetch comments, returning post only');
+      return [postInfoData, { data: { children: [] } }];
+    }
+
+    const commentsData = await commentsResponse.json();
+    
+    // Return in the same format as the old JSON endpoint (array with [post, comments])
+    return commentsData;
   } catch (error) {
-    console.error('Fetch error:', error);
+    console.error('Error fetching Reddit post:', error);
     throw new Error(`Error fetching Reddit data: ${error.message}`);
   }
 }

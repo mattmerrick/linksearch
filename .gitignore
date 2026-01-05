@@ -1,1 +1,7 @@
 .vercel
+
+# Environment variables (contains sensitive credentials)
+.env
+.env.local
+.env*.local
+VERCEL_ENV_SETUP.txt
