@@ -80,13 +80,14 @@ export default async function handler(req, res) {
     // Sort comments by upvotes
     const sortedComments = sortCommentsByUpvotes(comments);
 
-    // Format output
+    // Format output (for text-based copying)
     const output = formatOutput(postInfo, sortedComments);
 
     res.status(200).json({
       success: true,
       output: output,
       post_info: postInfo,
+      comments: sortedComments, // Include raw comments array for frontend
       comment_count: sortedComments.length
     });
     return;
